@@ -1,6 +1,5 @@
 import shutil
 
-from functools import cache
 from re import Pattern
 from typing import Any, Literal
 
@@ -71,17 +70,8 @@ class Settings(BaseSettings):
     REDIS_MAX_CONNECTIONS: int = 100  # 连接池上限
     REDIS_POOL_TIMEOUT: int = 20  # 等待空闲连接超时（秒）
 
-    # 缓存
-    CACHE_LOCAL_ENABLED: bool = True
-    CACHE_LOCAL_MAXSIZE: int = 100000
-    CACHE_LOCAL_TTL: int = 60 * 60 * 2  # 2 小时
-    CACHE_REDIS_TTL: int = 60 * 60 * 2  # 2 小时
-    CACHE_CONFIG_REDIS_PREFIX: str = 'fba:cache:config'
-    CACHE_DICT_REDIS_PREFIX: str = 'fba:cache:dict'
-    CACHE_PUBSUB_CHANNEL: str = 'fba:cache:invalidate'
-    CACHE_PUBSUB_RECONNECT_DELAY: int = 5  # 重连延迟（秒）
-    CACHE_PUBSUB_MAX_RECONNECT_ATTEMPTS: int = 10  # 最大重连次数
-    CACHE_PUBSUB_POLL_TIMEOUT: float = 1.0  # 订阅消息轮询超时（秒）
+    # HTTP 缓存
+    HTTP_CACHE_TTL: int = 300  # 5 分钟
 
     # .env Snowflake
     SNOWFLAKE_ENABLED: bool = False
@@ -171,19 +161,14 @@ class Settings(BaseSettings):
     WS_NO_AUTH_MARKER: str = 'internal'
 
     # CORS
-    CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
-        'http://127.0.0.1',
-        'http://localhost:5173',
-    ]
+    CORS_ALLOWED_ORIGINS: list[str] = ['*']  # 末尾不带斜杠
     CORS_EXPOSE_HEADERS: list[str] = [
         'X-Request-ID',
+        'X-RateLimit-Retry-After',
     ]
 
     # 中间件配置
     MIDDLEWARE_CORS: bool = True
-
-    # 请求限制配置
-    REQUEST_LIMITER_REDIS_PREFIX: str = 'fba:limiter'
 
     # 时间配置
     DATETIME_TIMEZONE: str = 'Asia/Shanghai'
@@ -244,10 +229,12 @@ class Settings(BaseSettings):
         'old_password',
         'new_password',
         'confirm_password',
+        'secret',
     ]
     OPERA_LOG_QUEUE_MAXSIZE: int = 100000
     OPERA_LOG_QUEUE_BATCH_CONSUME_SIZE: int = 100
     OPERA_LOG_QUEUE_TIMEOUT: int = 60  # 1 分钟
+    OPERA_LOG_QUEUE_DRAIN_TIMEOUT: int = 10  # 停止时排空队列的最长等待时间
     OPERA_LOG_BODY_MAX_SIZE: int = 10240  # 10 KB
 
     # Plugin 配置
@@ -348,12 +335,11 @@ class Settings(BaseSettings):
         return values
 
 
-@cache
 def get_settings() -> Settings:
     """获取全局配置单例"""
     if not ENV_FILE_PATH.exists():
         shutil.copy(ENV_EXAMPLE_FILE_PATH, ENV_FILE_PATH)
-    return Settings()
+    return Settings.settings_cached()
 
 
 # 创建全局配置实例

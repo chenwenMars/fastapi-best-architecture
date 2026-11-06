@@ -1,8 +1,6 @@
-from enum import Enum
 from enum import IntEnum as SourceIntEnum
-from typing import Any, TypeVar
-
-T = TypeVar('T', bound=Enum)
+from enum import StrEnum as SourceStrEnum
+from typing import Any
 
 
 class _EnumBase:
@@ -28,7 +26,7 @@ class IntEnum(_EnumBase, SourceIntEnum):
     """整型枚举基类"""
 
 
-class StrEnum(_EnumBase, str, Enum):
+class StrEnum(_EnumBase, SourceStrEnum):
     """字符串枚举基类"""
 
 
@@ -154,3 +152,14 @@ class LifespanStage(IntEnum):
     core = 0
     plugin = 1
     tail = 2
+
+
+class RequestExceptionKind(StrEnum):
+    """请求异常类型，取值同时作为 Prometheus 异常标签"""
+
+    authentication = 'AuthenticationError'
+    http = 'HTTPException'
+    validation = 'RequestValidationError'
+    assertion = 'AssertionError'
+    custom = 'BaseExceptionError'
+    unknown = 'Exception'

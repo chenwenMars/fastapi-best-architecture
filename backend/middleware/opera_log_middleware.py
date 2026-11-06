@@ -1,7 +1,8 @@
+import asyncio
 import json
 import time
 
-from asyncio import Queue
+from asyncio import Queue, QueueFull
 from typing import Any
 
 from fastapi import Response
@@ -14,8 +15,9 @@ from backend.app.admin.service.opera_log_service import opera_log_service
 from backend.common.context import ctx
 from backend.common.enums import StatusType
 from backend.common.log import log
-from backend.common.observability.prometheus.queue import observe_queue_size
+from backend.common.observability.prometheus.queue import inc_queue_exception, observe_queue_size
 from backend.common.queue import batch_consume
+from backend.common.redaction import REDACTED, redaction
 from backend.common.response.response_code import StandardResponseCode
 from backend.core.conf import settings
 from backend.database.db import async_db_session
@@ -27,6 +29,7 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
 
     opera_log_queue_name = 'opera_log_queue'
     opera_log_queue: Queue[CreateOperaLogParam] = Queue(maxsize=settings.OPERA_LOG_QUEUE_MAXSIZE)
+    opera_log_stop_event = asyncio.Event()
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:  # ruff:ignore[complex-structure]
         """
@@ -68,20 +71,12 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
 
             if should_log_opera:
                 # 检查上下文中的异常信息
-                for exception_key in [
-                    '__request_http_exception__',
-                    '__request_validation_exception__',
-                    '__request_assertion_error__',
-                    '__request_custom_exception__',
-                    '__request_unknown_exception__',
-                ]:
-                    exception = ctx.get(exception_key)
-                    if exception:
-                        code = exception.get('code')
-                        msg = exception.get('msg')
-                        status = StatusType.disable
-                        log.error(f'请求异常: {msg}')
-                        break
+                request_exception = ctx.request_exception
+                if request_exception is not None:
+                    code = request_exception.code
+                    msg = request_exception.msg
+                    status = StatusType.disable
+                    log.error(f'请求异常: {msg}')
         finally:
             # summary 只能在请求后获取
             route = request.scope.get('route')
@@ -119,7 +114,13 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
                     cost_time=elapsed,
                     opera_time=ctx.start_time,
                 )
-                await self.opera_log_queue.put(opera_log_in)
+                # 日志队列已满时丢弃，避免日志写入积压拖慢业务请求
+                try:
+                    self.opera_log_queue.put_nowait(opera_log_in)
+                except QueueFull:
+                    log.warning('操作日志队列已满，已丢弃本次请求的操作日志')
+                    if settings.GRAFANA_METRICS_ENABLE:
+                        inc_queue_exception(queue_name=self.opera_log_queue_name)
                 if settings.GRAFANA_METRICS_ENABLE:
                     observe_queue_size(self.opera_log_queue, queue_name=self.opera_log_queue_name)
 
@@ -133,6 +134,9 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         :return:
         """
         args = {}
+        # 业务插件注册的敏感路径整体不记录请求参数
+        if redaction.is_body_redacted(request.url.path):
+            return {'body': REDACTED}
 
         # 查询参数
         query_params = dict(request.query_params)
@@ -240,12 +244,13 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         """
         for key in args:
             if key in settings.OPERA_LOG_REDACT_KEYS:
-                args[key] = '[REDACTED]'
+                args[key] = REDACTED
         return args
 
     @classmethod
     async def consumer(cls) -> None:
         """操作日志消费者"""
+        cls.opera_log_stop_event.clear()
 
         async def bulk_create_opera_log(logs: list[CreateOperaLogParam]) -> None:
             """批量创建操作日志"""
@@ -262,4 +267,21 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
             queue_name=cls.opera_log_queue_name,
             error_message='操作日志入库失败',
             item_name='日志',
+            stop_event=cls.opera_log_stop_event,
         )
+
+    @classmethod
+    async def stop_consumer(cls, task: asyncio.Task[None]) -> None:
+        """
+        停止操作日志消费者，在限定时间内排空队列，超时后取消
+
+        :param task: 操作日志消费者任务
+        :return:
+        """
+        if task.done():
+            return
+        cls.opera_log_stop_event.set()
+        try:
+            await asyncio.wait_for(task, timeout=settings.OPERA_LOG_QUEUE_DRAIN_TIMEOUT)
+        except TimeoutError:
+            log.warning(f'操作日志未能在 {settings.OPERA_LOG_QUEUE_DRAIN_TIMEOUT} 秒内全部入库，剩余日志已丢弃')
