@@ -1,10 +1,12 @@
 from pathlib import Path
 from typing import Any, Final
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.common.enums import PluginLevelType
 from backend.core.path_conf import PLUGIN_DIR
+from backend.plugin.compatibility import validate_fba_compatibility
 from backend.plugin.errors import PluginConfigError
 from backend.utils.pattern_validate import match_string
 
@@ -12,7 +14,7 @@ from backend.utils.pattern_validate import match_string
 _VALID_TAGS: Final = frozenset({'ai', 'mcp', 'agent', 'auth', 'storage', 'notification', 'task', 'payment', 'other'})
 
 # 支持的数据库类型
-_VALID_DATABASES: Final = frozenset({'mysql', 'postgresql'})
+_VALID_DATABASES: Final = frozenset({'postgresql'})
 
 
 def _validate_settings(v: dict[str, Any]) -> dict[str, Any]:
@@ -40,6 +42,7 @@ class PluginInfoSchema(BaseModel):
     icon: str | None = Field(None, description='图标路径或链接地址')
     summary: str = Field(..., min_length=1, max_length=100, description='摘要')
     version: str = Field(..., description='版本号')
+    fba_version: str = Field(..., description='适配的 fba 版本声明，PEP 440 版本规范，如 >=1.17.0,<2.0.0')
     description: str = Field(..., min_length=1, max_length=500, description='描述')
     author: str = Field(..., min_length=1, max_length=50, description='作者')
     tags: list[str] = Field(..., min_length=1, description='标签')
@@ -52,6 +55,21 @@ class PluginInfoSchema(BaseModel):
         """校验版本号格式"""
         if not match_string(r'^\d+\.\d+\.\d+$', v):
             raise PluginConfigError(f'版本号格式错误，应为 x.y.z 格式，如 1.0.0，当前值: {v}')
+        return v
+
+    @field_validator('fba_version')
+    @classmethod
+    def validate_fba_version(cls, v: str) -> str:
+        """校验 fba 版本声明"""
+        if not v.strip():
+            raise PluginConfigError('fba 版本声明不能为空')
+        try:
+            SpecifierSet(v)
+        except InvalidSpecifier as e:
+            raise PluginConfigError(
+                f'fba 版本声明格式错误，应为 PEP 440 版本声明，'
+                f'如 ">=1.17.0"、">=1.17.0,<2.0.0"、"~=1.17"、"==1.17.0"，当前值: {v}'
+            ) from e
         return v
 
     @field_validator('tags')
@@ -226,37 +244,42 @@ def validate_plugin_config(plugin_name: str, config: dict[str, Any]) -> PluginLe
             error_msg = '; '.join(error_details)
         raise PluginConfigError(f'插件 {plugin_name} 配置校验失败: {error_msg}') from e
 
+    validate_fba_compatibility(plugin_name, config['plugin']['fba_version'])
+
     depends_on = config['plugin'].get('depends_on', [])
     if plugin_name in depends_on:
         raise PluginConfigError(f'插件 {plugin_name} 不能依赖自身')
 
+    return plugin_level
+
+
+def validate_plugin_files(plugin_name: str, config: dict[str, Any]) -> None:
+    """
+    校验插件文件完整性
+
+    检查插件声明的数据库与 SQL 脚本是否齐备
+
+    :param plugin_name: 插件名称
+    :param config: 插件配置
+    :return:
+    """
     plugin_dir = Path(PLUGIN_DIR) / plugin_name
     model_dir = plugin_dir / 'model'
-    if model_dir.is_dir():
-        if not config['plugin'].get('database'):
-            raise PluginConfigError(f'插件 {plugin_name} 包含 model 目录时必须声明支持的数据库')
-        sql_dir = plugin_dir / 'sql'
-        supported_db_types = []
-        missing_details = []
-        for db_type in ('mysql', 'postgresql'):
-            db_sql_dir = sql_dir / db_type
-            required_sql_files = (
-                db_sql_dir / 'init.sql',
-                db_sql_dir / 'destroy.sql',
-                db_sql_dir / 'init_snowflake.sql',
-                db_sql_dir / 'destroy_snowflake.sql',
-            )
-            missing_files = [
-                str(sql_file.relative_to(plugin_dir)) for sql_file in required_sql_files if not sql_file.is_file()
-            ]
-            if not missing_files:
-                supported_db_types.append(db_type)
-                continue
-            missing_details.append(f'{db_type}: {", ".join(missing_files)}')
-        if not supported_db_types:
-            raise PluginConfigError(
-                f'插件 {plugin_name} 必须至少提供一种数据库的初始化和销毁 SQL 脚本，'
-                f'当前缺失: {"; ".join(missing_details)}'
-            )
+    if not model_dir.is_dir():
+        return
 
-    return plugin_level
+    if not config['plugin'].get('database'):
+        raise PluginConfigError(f'插件 {plugin_name} 包含 model 目录时必须声明支持的数据库')
+
+    sql_dir = plugin_dir / 'sql' / 'postgresql'
+    required_sql_files = (
+        sql_dir / 'init.sql',
+        sql_dir / 'destroy.sql',
+        sql_dir / 'init_snowflake.sql',
+        sql_dir / 'destroy_snowflake.sql',
+    )
+    missing_files = [str(sql_file.relative_to(plugin_dir)) for sql_file in required_sql_files if not sql_file.is_file()]
+    if missing_files:
+        raise PluginConfigError(
+            f'插件 {plugin_name} 缺少 PostgreSQL 的初始化和销毁 SQL 脚本，当前缺失: {", ".join(missing_files)}'
+        )

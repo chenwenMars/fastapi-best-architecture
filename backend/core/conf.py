@@ -45,7 +45,6 @@ class Settings(BaseSettings):
     FASTAPI_STATIC_FILES: bool = True
 
     # .env 数据库
-    DATABASE_TYPE: Literal['mysql', 'postgresql']
     DATABASE_HOST: str
     DATABASE_PORT: int
     DATABASE_USER: str
@@ -56,7 +55,6 @@ class Settings(BaseSettings):
     DATABASE_ECHO: bool | Literal['debug'] = False
     DATABASE_POOL_ECHO: bool | Literal['debug'] = False
     DATABASE_SCHEMA: str = 'fba'
-    DATABASE_CHARSET: str = 'utf8mb4'
     DATABASE_PK_MODE: Literal['autoincrement', 'snowflake'] = 'autoincrement'
 
     # .env Redis
@@ -280,11 +278,6 @@ class Settings(BaseSettings):
     CELERY_RABBITMQ_VHOST: str = ''
     CELERY_REDIS_PREFIX: str = 'fba:celery'
     CELERY_TASK_MAX_RETRIES: int = 5
-
-    ##################################################
-    # [ Plugin ] code_generator
-    ##################################################
-    CODE_GENERATOR_DOWNLOAD_ZIP_FILENAME: str
 
     ##################################################
     # [ Plugin ] oauth2
