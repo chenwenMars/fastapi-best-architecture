@@ -1,6 +1,5 @@
 import io
 import os
-import re
 import stat
 import zipfile
 
@@ -24,7 +23,7 @@ from backend.plugin.compatibility import check_fba_compatibility
 from backend.plugin.errors import PluginConfigError
 from backend.plugin.requirements import install_requirements_async
 from backend.utils.locks import acquire_distributed_reload_lock
-from backend.utils.pattern_validate import is_git_url
+from backend.utils.pattern_validate import is_git_url, is_plugin_name
 
 
 async def _append_env_example(plugin_path: anyio.Path) -> None:
@@ -55,6 +54,19 @@ async def _append_env_example(plugin_path: anyio.Path) -> None:
 
     async with await open_file(env_path, mode='w', encoding='utf-8') as f:
         await f.write(new_content)
+
+
+def parse_plugin_name(name: str) -> str:
+    """
+    解析插件名称
+
+    :param name: 插件压缩包文件名（不含扩展名）
+    :return:
+    """
+    plugin_name_match = is_plugin_name(name.strip())
+    if not plugin_name_match:
+        raise errors.RequestError(msg='插件压缩包文件名非法')
+    return plugin_name_match.group()
 
 
 def _check_manifest_fba_compatibility(plugin_name: str, manifest: dict[str, Any]) -> None:
@@ -167,13 +179,9 @@ async def install_zip_plugin(file: UploadFile | str) -> str:
             contents = await fb.read()
     else:
         contents = await file.read()
-    plugin_name_match = re.match(
-        r'^([a-zA-Z0-9_]+)',
-        file.split(os.sep)[-1].split('.')[0].strip() if isinstance(file, str) else file.filename.split('.')[0].strip(),
+    plugin_name = parse_plugin_name(
+        file.split(os.sep)[-1].split('.')[0].strip() if isinstance(file, str) else file.filename.split('.')[0].strip()
     )
-    if not plugin_name_match:
-        raise errors.RequestError(msg='插件压缩包文件名非法')
-    plugin_name = plugin_name_match.group()
 
     async with acquire_distributed_reload_lock():
         full_plugin_path = anyio.Path(PLUGIN_DIR / plugin_name)
