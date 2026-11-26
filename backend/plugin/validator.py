@@ -8,6 +8,7 @@ from backend.common.enums import PluginLevelType
 from backend.core.path_conf import PLUGIN_DIR
 from backend.plugin.compatibility import validate_fba_compatibility
 from backend.plugin.errors import PluginConfigError
+from backend.plugin.sql import REQUIRED_SQL_FILES
 from backend.utils.dynamic_import import get_model_tables
 from backend.utils.pattern_validate import match_string
 
@@ -256,12 +257,7 @@ def validate_plugin_files(plugin_name: str) -> None:
         return
 
     sql_dir = plugin_dir / 'sql' / 'postgresql'
-    required_sql_files = (
-        sql_dir / 'init.sql',
-        sql_dir / 'destroy.sql',
-        sql_dir / 'init_snowflake.sql',
-        sql_dir / 'destroy_snowflake.sql',
-    )
+    required_sql_files = tuple(sql_dir / sql_file for sql_file in REQUIRED_SQL_FILES)
     missing_files = [str(sql_file.relative_to(plugin_dir)) for sql_file in required_sql_files if not sql_file.is_file()]
     if missing_files:
         raise PluginConfigError(

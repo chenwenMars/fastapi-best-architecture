@@ -99,3 +99,25 @@ class CompatibilityResult:
     compatible: bool
     required: str
     current: str
+
+
+@dataclasses.dataclass(slots=True)
+class PluginCheckItem:
+    """插件安装检测项"""
+
+    name: str
+    passed: bool
+    detail: str
+
+
+@dataclasses.dataclass(slots=True)
+class PluginCheckReport:
+    """插件安装检测报告"""
+
+    plugin_name: str
+    items: list[PluginCheckItem] = dataclasses.field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        """是否通过全部检测项"""
+        return all(item.passed for item in self.items)

@@ -45,6 +45,17 @@ def is_git_url(url: str) -> re.Match[str]:
     return match_string(git_pattern, url)
 
 
+def is_plugin_name(value: str) -> re.Match[str]:
+    """
+    检查插件名称格式
+
+    :param value: 待检查的插件名称
+    :return:
+    """
+    plugin_name_pattern = r'^([a-zA-Z0-9_]+)'
+    return match_string(plugin_name_pattern, value)
+
+
 def is_has_number(value: str) -> re.Match[str]:
     """
     检查数字

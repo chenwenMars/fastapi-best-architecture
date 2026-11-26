@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from watchfiles import Change, PythonFilter
 
 from backend import __version__
-from backend.common.dataclasses import PluginEntry
+from backend.common.dataclasses import PluginCheckReport, PluginEntry
 from backend.common.enums import PrimaryKeyType
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.model import MappedBase
@@ -44,6 +44,7 @@ from backend.database.db import (
     get_database_url,
 )
 from backend.database.redis import RedisCli, redis_client
+from backend.plugin.checker import check_plugin_installation
 from backend.plugin.core import (
     get_plugins,
     get_required_plugins,
@@ -348,8 +349,14 @@ async def install_plugin(  # ruff:ignore[complex-structure]
     frontend: bool,  # ruff:ignore[boolean-type-hint-positional-argument]
     no_sql: bool,  # ruff:ignore[boolean-type-hint-positional-argument]
     pk_type: PrimaryKeyType,
+    *,
+    dry_run: bool = False,
 ) -> None:
     """安装插件"""
+    if dry_run:
+        await dry_run_plugin_installation(path=path, repo_url=repo_url, frontend=frontend)
+        return
+
     if settings.ENVIRONMENT != 'dev':
         raise cappa.Exit('插件安装仅在开发环境可用', code=1)
 
@@ -393,6 +400,55 @@ async def install_plugin(  # ruff:ignore[complex-structure]
 
     except Exception as e:
         raise cappa.Exit(e.msg if isinstance(e, BaseExceptionError) else str(e), code=1)
+
+
+def print_plugin_check_report(report: PluginCheckReport) -> None:
+    """
+    打印插件安装条件检测报告
+
+    :param report: 检测报告
+    :return:
+    """
+    console.note(f'插件 {report.plugin_name} 安装条件检测')
+    table = Table(show_header=True, header_style='bold magenta')
+    table.add_column('检测项', style='cyan', no_wrap=True)
+    table.add_column('结果', justify='center', no_wrap=True)
+    table.add_column('说明', style='white')
+    for item in report.items:
+        result = Text('通过', style='green') if item.passed else Text('未通过', style='red')
+        table.add_row(item.name, result, item.detail)
+    console.print(table)
+
+
+async def dry_run_plugin_installation(*, path: str | None, repo_url: str | None, frontend: bool) -> None:
+    """
+    检测插件安装条件，不实际安装
+
+    :param path: ZIP 插件的本地完整路径
+    :param repo_url: Git 插件的仓库地址
+    :param frontend: 是否为前端插件
+    :return:
+    """
+    if frontend:
+        raise cappa.Exit('前端插件不支持 --dry-run 检测', code=1)
+
+    try:
+        report = await run_in_threadpool(
+            check_plugin_installation,
+            path=path,
+            repo_url=repo_url,
+            progress=console.note,
+        )
+    except Exception as e:
+        raise cappa.Exit(e.msg if isinstance(e, BaseExceptionError) else str(e), code=1)
+
+    print_plugin_check_report(report)
+    if not report.passed:
+        raise cappa.Exit('插件安装条件检测未通过', code=1)
+
+    install_command = f'fba add --path "{path}"' if path else f'fba add --repo-url {repo_url}'
+    console.tip('检测通过，执行以下命令安装插件')
+    console.print(f'  {install_command}')
 
 
 def should_sync_plugin_deps(plugin: str | None, *, allow_empty: bool) -> bool:
@@ -628,9 +684,20 @@ class Add:
         PrimaryKeyType,
         cappa.Arg(default=settings.DATABASE_PK_MODE, help='执行插件 SQL 脚本数据库主键类型'),
     ]
+    dry_run: Annotated[
+        bool,
+        cappa.Arg(default=False, help='仅检测插件安装条件，不实际安装插件'),
+    ]
 
     async def __call__(self) -> None:
-        await install_plugin(self.path, self.repo_url, self.frontend, self.no_sql, self.pk_type)
+        await install_plugin(
+            self.path,
+            self.repo_url,
+            self.frontend,
+            self.no_sql,
+            self.pk_type,
+            dry_run=self.dry_run,
+        )
 
 
 @cappa.command(help='移除插件')

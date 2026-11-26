@@ -1,3 +1,5 @@
+from typing import Final
+
 import anyio
 
 from backend.common.enums import PrimaryKeyType
@@ -24,6 +26,15 @@ def build_sql_filename(
     if suffix:
         parts.append(suffix)
     return f'{"_".join(parts)}.sql'
+
+
+# 插件必须提供的 PostgreSQL SQL 脚本文件名
+REQUIRED_SQL_FILES: Final = (
+    build_sql_filename('init', PrimaryKeyType.autoincrement),
+    build_sql_filename('destroy', PrimaryKeyType.autoincrement),
+    build_sql_filename('init', PrimaryKeyType.snowflake),
+    build_sql_filename('destroy', PrimaryKeyType.snowflake),
+)
 
 
 async def get_plugin_sql(plugin: str, pk_type: PrimaryKeyType) -> str | None:
